@@ -1,0 +1,189 @@
+version: "3.4"
+
+
+services: 
+################ Nginx #########################
+    summitproxy:
+        build:
+            context: ./Nginx
+            dockerfile: Dockerfile
+        image: summitproxy:dev
+        container_name: summitproxy
+        networks:
+            - summit
+        ports:
+            - 8081:8081
+            - 8082:8082
+            - 443:443
+        restart: always
+        depends_on:
+            - summitapi
+            - summitauth
+################ Summit API ####################
+    summitapi:
+        build:
+            context: .
+            dockerfile: ./Summit.API/Dockerfile
+        image: summitapi:dev
+        container_name: summitapi
+        networks:
+            - summit
+        expose:
+            - "5000"
+        ports:
+            - 4444:443
+            - 4445:80
+        environment:
+            - ASPNETCORE_ENVIRONMENT=Development
+            - ASPNETCORE_URLS=https://+:443;http://+:5000
+            - DOTNET_RUNNING_IN_CONTAINER=true
+            - ASPNETCORE_HTTPS_PORT=5001
+            - Kestrel__Certificates__Default__Path=/app/summit.auth.pfx
+            - Kestrel__Certificates__Default__Password=summit2020
+            - QUEUE_CLIENT=amqp://admin:admin@10.0.0.237:5672
+            - SUMMIT_EXCHANGE=summit.visualizations
+            - REPORT_QUEUE=visualizations.reports
+            - AUTH_URL=https://10.0.0.237:8082/
+            - SUMMIT_UI=http://localhost:8080
+        depends_on:
+            - postgres_db
+################## Auth #####################
+    summitauth:
+        build:
+            context: .
+            dockerfile: ./Summit.Auth/Dockerfile
+        image: summitauth:dev
+        container_name: summitauth
+        networks:
+            - summit
+        ports:
+            - 5444:443
+            - 5445:80
+        expose:
+            - "5000"
+        environment:
+            - ASPNETCORE_ENVIRONMENT=Development
+            - ASPNETCORE_URLS=https://+:443;http://+:5000;
+            - DOTNET_RUNNING_IN_CONTAINER=true
+            - ASPNETCORE_HTTPS_PORT=5001
+            - Kestrel__Certificates__Default__Path=/app/summit.auth.pfx
+            - Kestrel__Certificates__Default__Password=summit2020      
+        depends_on:
+            - postgres_db
+        
+################## Frontend ##################
+    frontend:
+        image: summitui:dev
+        container_name: summitui
+        build:
+            context: summit.ui
+        networks:
+            - summit
+        ports:
+            - 8080:8080
+        volumes:
+            - ./summit.ui/src:/app/src
+            - ./summit.ui/public:/app/public
+        environment:
+            - CHOKIDAR_USEPOLLING=true # Enable hot reload in container
+            - VISUALIZATIONS_HUB=https://10.0.0.237:8081/visualizationshub
+        command: ["npm", "run", "serve", "--host 0.0.0.0"]
+        depends_on:
+            - summitapi
+    
+############ Postgres DB #####################
+    postgres_db:
+        image: postgres:latest
+        networks:
+            - summit
+        environment:
+            - POSTGRES_PASSWORD=test1234
+        volumes:
+            - ./postgres-data:/var/lib/postgresql/data
+        ports:
+            - 5433:5432
+
+############ RabbitMQ Message Queue ##########
+    rabbitmq:
+        build:
+            context: .
+            dockerfile: ./summit_visualizations/report_processor/Dockerfile
+        container_name: summit_queue
+        ports:
+            - 5672:5672
+            - 15672:15672
+        networks:
+            - summit
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:15672"]
+            interval: 30s
+            timeout: 10s
+            retries: 5
+        image: rabbitmq:3-management
+
+############ Python Service ##########
+    python-service:
+        build:
+            context: .
+            dockerfile: ./summit_visualizations/Dockerfile
+        # 'rabbitmq' will be dependent inside this service
+        # and this service will start only after the RabbitMQ service does.
+        expose:
+            - "3000"
+        deploy:
+            mode: replicated
+            replicas: 2
+        networks:
+            - summit
+        restart: on-failure
+        depends_on:
+            - rabbitmq
+        # Keep it running.
+        tty: true
+        volumes:
+            - './summit_visualizations:/app'
+        environment:
+            - RABBIT_HOSTNAME=10.0.0.237 
+            - PIKA_USERNAME=admin
+            - PIKA_PASSWORD=admin
+            - QUEUE=rabbitmq
+            - PYTHON_QUEUE=summit.visualizations        # Consumer Queue
+            - SIGNALR_QUEUE=visualizations.plotimages   # Upload queue
+            - REPORT_QUEUE=visualizations.reports
+
+## Nginx for load Balancing Python service
+    nginx:
+        image: nginx:latest
+        networks:
+            - summit
+        volumes:
+            - ./summit_visualizations/report_processor/nginx.conf:/etc/nginx/nginx.conf:ro
+        depends_on:
+            - python-service
+        ports:
+            - "4000:4000"
+            
+
+########### SignalR Service ##########
+    signalr:
+        build:
+            context: .
+            dockerfile: ./Summit.SignalRWorker/Dockerfile
+        deploy:
+            mode: replicated
+            replicas: 2
+        networks:
+            - summit
+        restart: on-failure
+        depends_on:
+            - rabbitmq
+        environment:
+            - SIGNALR_HOSTNAME=10.0.0.237 
+            - SIGNALR_HOSTURL=https://10.0.0.237:4444/visualizationshub
+            - SIGNALR_USERNAME=admin
+            - SIGNALR_PASSWORD=admin
+################# Networks ###################
+networks:
+    summit:
+        driver: "bridge"
+        # needs to persist due to auth being used

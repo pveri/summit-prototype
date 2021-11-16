@@ -1,0 +1,11 @@
+{
+    "SUMMIT_API": "https://10.0.0.237:8081/api",
+    "AUTH_URL": "https://10.0.0.237:8082/home/login",
+    "OIDC_AUTHORITY": "https://10.0.0.237:8082/",
+    "OIDC_CLIENT": "summit_vue_app2",
+    "OIDC_SIGNIN": "http://localhost:8080/signin",
+    "OIDC_LOGOUT": "https://google.ca",
+    "OIDC_SCOPE": "openid api1",
+    "OIDC_RESPONSE_TYPE": "code id_token",
+    "VISUALIZATIONS_HUB": "https://10.0.0.237:8081/visualizationshub"
+}
